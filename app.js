@@ -1,97 +1,104 @@
 const express = require('express');
-const cors = require('cors');
+const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
+const dotenv = require('dotenv');
+const cors = require('cors');
 const path = require('path');
 
-const mysql = require('mysql2');
+// Load env vars
+dotenv.config();
 
-
+// Import School model
+const School = require('./model/school.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
-
-// Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// DB connection
-const db = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: 'saty@12345', // replace with your actual password
-  database: 'school_management' // replace with your DB name
-});
+// Connect MongoDB
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
 
-db.connect(err => {
-  if (err) {
-    console.error('DB connection error:', err);
-  } else {
-    console.log('Connected to MySQL DB');
-  }
-});
+// Add School API
+app.post('/addSchool', async (req, res) => {
+  try {
+    const { name, address, latitude, longitude } = req.body;
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
 
-// API: Add School
-app.post('/addSchool', (req, res) => {
-  const { name, address, latitude, longitude } = req.body;
-
-  if (!name || !address || isNaN(latitude) || isNaN(longitude)) {
-    return res.status(400).json({ error: 'Invalid data' });
-  }
-
-  const sql = 'INSERT INTO schools (name, address, latitude, longitude) VALUES (?, ?, ?, ?)';
-  db.query(sql, [name, address, latitude, longitude], (err, result) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
+    if (!name || !address || isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ error: 'Invalid input' });
     }
-    res.json({ message: 'School added', schoolId: result.insertId });
-  });
-});
 
-// API: List Schools
-app.get('/listSchools', (req, res) => {
-  const { lat, lon } = req.query;
+    const school = new School({ name, address, latitude: lat, longitude: lng });
+    const saved = await school.save();
 
-  if (isNaN(lat) || isNaN(lon)) {
-    return res.status(400).json({ error: 'Invalid coordinates' });
+    res.status(201).json({ message: 'School added successfully', schoolId: saved._id });
+  } catch (err) {
+    console.error('Error adding school:', err);
+    res.status(500).json({ error: 'Server error' });
   }
-
-  db.query('SELECT * FROM schools', (err, results) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
-
-    const userLat = parseFloat(lat);
-    const userLon = parseFloat(lon);
-
-    const withDistance = results.map(school => {
-      const distance = getDistance(userLat, userLon, school.latitude, school.longitude);
-      return { ...school, distance };
-    });
-
-    withDistance.sort((a, b) => a.distance - b.distance);
-    res.json(withDistance);
-  });
 });
 
-// Utility: Haversine formula
-function getDistance(lat1, lon1, lat2, lon2) {
-  function toRad(x) { return x * Math.PI / 180; }
-
-  const R = 6371; // Earth radius (km)
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
-
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// Helper: Convert degrees to radians
+function toRad(value) {
+  return (value * Math.PI) / 180;
 }
+
+// List Nearby Schools
+app.get('/listSchools', async (req, res) => {
+  try {
+    const { latitude, longitude } = req.query;
+    const userLat = parseFloat(latitude);
+    const userLng = parseFloat(longitude);
+
+    if (isNaN(userLat) || isNaN(userLng)) {
+      return res.status(400).json({ error: 'Invalid coordinates' });
+    }
+
+    const schools = await School.find({});
+
+    const R = 6371; // Earth's radius in km
+
+    const sorted = schools.map(school => {
+      const dLat = toRad(school.latitude - userLat);
+      const dLng = toRad(school.longitude - userLng);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(userLat)) *
+        Math.cos(toRad(school.latitude)) *
+        Math.sin(dLng / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      const distance = R * c;
+
+      console.log(`${school.name}: ${distance.toFixed(2)} km away`);
+
+      return { ...school._doc, distance };
+    }).sort((a, b) => a.distance - b.distance);
+
+    res.json(sorted);
+  } catch (err) {
+    console.error('Error fetching schools:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get All Schools (raw, unsorted)
+app.get('/allSchools', async (req, res) => {
+  try {
+    const schools = await School.find({});
+    res.json(schools);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch schools' });
+  }
+});
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
